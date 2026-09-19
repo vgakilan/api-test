@@ -1,0 +1,5 @@
+runs/
+
+# Local environment and secret files
+environments/local.ps1
+environments/*.local.ps1
