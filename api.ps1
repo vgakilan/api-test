@@ -28,7 +28,7 @@ if ($Help -or [string]::IsNullOrWhiteSpace($Command)) {
 PowerShell API test CLI
 
   .\api.ps1 <interface> -Env test [-Payload valid.json] [-Set key=value]
-  .\api.ps1 create <interface-name>
+  .\api.ps1 create <interface-name-or-group/interface-name>
 
 Overrides (array options are supplied once, with comma-separated values):
   -Url <http(s)-url> -Method GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS
@@ -51,9 +51,9 @@ try {
     Assert-InterfaceName $Command
     if ($Command -eq 'create') {
         Assert-InterfaceName $Payload
-        $interfacePath = Join-Path $PSScriptRoot "interface\$Payload"
+        $interfacePath = Resolve-InterfacePath $PSScriptRoot $Payload
         if (Test-Path -LiteralPath $interfacePath) { Stop-ApiValidation 'Interface already exists.' }
-        $null = New-Item -ItemType Directory -Path (Join-Path $interfacePath 'payloads')
+        $null = New-Item -ItemType Directory -Path (Join-Path $interfacePath 'payloads') -Force
         Write-Utf8 (Join-Path $interfacePath 'request.toml') "method = `"GET`"`npath = `"/`"`nheaders = []`n"
         Write-Output "Created interface/$Payload with request.toml and payloads/"
         exit 0
@@ -73,7 +73,7 @@ try {
     $environmentValues = Get-Value $environment 'values' @{}
     if ($environmentValues -isnot [hashtable]) { Stop-ApiValidation 'Environment values must be a table.' }
 
-    $interfacePath = Join-Path $PSScriptRoot "interface\$Command"
+    $interfacePath = Resolve-InterfacePath $PSScriptRoot $Command
     $request = Read-ApiToml (Join-Path $interfacePath 'request.toml')
     Assert-Keys $request @('service','method','path','headers','query','expected_status') 'request'
     if ($request.ContainsKey('expected_status') -and $request.expected_status -isnot [array]) { Stop-ApiValidation 'expected_status must be an array of integers.' }
@@ -140,10 +140,11 @@ try {
     }
     if ($methodValue -eq 'HEAD' -and $bodyFile) { Stop-ApiValidation 'HEAD cannot include a payload.' }
 
+    $reportRequestName = Get-InterfaceReportName $Command
     $result = Invoke-ApiCurl -RequestUrl $requestUrl -Method $methodValue -Headers $headers -BodyFile $bodyFile `
         -ExpectedStatus $statuses -TimeoutSeconds $TimeoutSeconds -ConnectTimeoutSeconds $ConnectTimeoutSeconds `
         -MaxResponseBytes $MaxResponseBytes -TemporaryDirectory $temporaryDirectory -SecretValues $secretValues.ToArray() `
-        -SaveReport:$Save -DebugMode:$DebugMode -RequestName $Command -ServiceName ([string](Get-Value $request 'service' $Command)) `
+        -SaveReport:$Save -DebugMode:$DebugMode -RequestName $reportRequestName -ServiceName ([string](Get-Value $request 'service' $Command)) `
         -EnvironmentName $Env -ReportRoot (Join-Path $PSScriptRoot 'runs')
     foreach ($line in $result.Output) { Write-Output $line }
     $exitCode = $result.ExitCode

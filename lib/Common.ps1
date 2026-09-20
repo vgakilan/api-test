@@ -25,7 +25,27 @@ function Assert-Keys([hashtable]$Map, [string[]]$Allowed, [string]$Context) {
 }
 
 function Assert-InterfaceName([string]$Name) {
-    if ($Name -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$' -or $Name -match '^(?i:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])$') { Stop-ApiValidation 'Invalid interface name.' }
+    if ([string]::IsNullOrWhiteSpace($Name) -or [IO.Path]::IsPathRooted($Name) -or $Name.Contains('\') -or $Name.StartsWith('/') -or $Name.EndsWith('/')) { Stop-ApiValidation 'Invalid interface name.' }
+    $segments = @($Name -split '/')
+    if ($segments.Count -gt 2 -or $segments.Count -lt 1 -or @($segments | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) { Stop-ApiValidation 'Interface names support at most one nested group.' }
+    foreach ($segment in $segments) {
+        if ($segment -eq '..' -or $segment -eq '.' -or $segment -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$' -or $segment -match '^(?i:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])$') { Stop-ApiValidation 'Invalid interface name.' }
+    }
+}
+
+function Resolve-InterfacePath([string]$ProjectRoot, [string]$Name) {
+    Assert-InterfaceName $Name
+    $interfaceRoot = [IO.Path]::GetFullPath((Join-Path $ProjectRoot 'interface'))
+    $interfaceRootWithSeparator = $interfaceRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $relativeName = $Name.Replace('/', [IO.Path]::DirectorySeparatorChar)
+    $resolved = [IO.Path]::GetFullPath((Join-Path $interfaceRoot $relativeName))
+    if (-not $resolved.StartsWith($interfaceRootWithSeparator, [StringComparison]::OrdinalIgnoreCase)) { Stop-ApiValidation 'Interface path must stay inside the interface directory.' }
+    return $resolved
+}
+
+function Get-InterfaceReportName([string]$Name) {
+    Assert-InterfaceName $Name
+    return ($Name -replace '/', '-')
 }
 
 function Get-TomlTokens([string]$Text) {

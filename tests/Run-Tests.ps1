@@ -62,7 +62,16 @@ number = 42
     Assert-True ($merged.Count -eq 2 -and ($merged -join '|') -notmatch 'old') 'Header overrides replace case-insensitively'
     Assert-Throws { Merge-ApiHeaders @("X-Test: ok`r`nInjected: yes") @() @{} $secrets } 'Header injection rejected'
     Assert-Throws { Assert-InterfaceName '../outside' } 'Interface traversal rejected'
+    foreach ($invalidInterface in @('a/b/c', 'a//b', '/a', 'a/', 'a\b', './a', 'a/../b')) {
+        Assert-Throws { Assert-InterfaceName $invalidInterface } "Invalid grouped interface rejected: $invalidInterface"
+    }
     Assert-Throws { Assert-InterfaceName 'CON' } 'Reserved Windows name rejected'
+    $interfaceRoot = Join-Path $temp 'interface'
+    $nestedResolved = Resolve-InterfacePath $temp 'meps/sendEstateClaim'
+    Assert-True ($nestedResolved -eq [IO.Path]::GetFullPath((Join-Path $interfaceRoot 'meps\sendEstateClaim'))) 'Nested interface resolves inside interface root'
+    $flatResolved = Resolve-InterfacePath $temp 'get-user'
+    Assert-True ($flatResolved -eq [IO.Path]::GetFullPath((Join-Path $interfaceRoot 'get-user'))) 'Existing flat interface resolves unchanged'
+    Assert-True ((Get-InterfaceReportName 'meps/sendEstateClaim') -eq 'meps-sendEstateClaim') 'Nested report name is sanitized'
     Assert-True ((Protect-ApiText 'aaa bbb' @('aaa','bbb')) -eq '[REDACTED] [REDACTED]') 'Equal-length secrets both masked'
     foreach ($sample in @('Authorization: Bearer SYNTHETIC-SECRET','> X-Api-Key: SYNTHETIC-SECRET','{"Authorization":"SYNTHETIC-SECRET"}','<refresh_token>SYNTHETIC-SECRET</refresh_token>','password=SYNTHETIC-SECRET&ok=1')) {
         Assert-True ((Protect-ApiText $sample) -notmatch 'SYNTHETIC-SECRET') 'Sensitive field redaction'
@@ -106,6 +115,18 @@ number = 42
     Write-Utf8 (Join-Path $sandbox 'interface\test\request.toml') "method = `"GET`"`npath = `"/`"`nheaders = []`n"
     $cli = Join-Path $sandbox 'api.ps1'
     $requestFile = Join-Path $sandbox 'interface\test\request.toml'
+    $nestedInterface = Join-Path $sandbox 'interface\meps\sendEstateClaim'
+    $null = New-Item -ItemType Directory -Path (Join-Path $nestedInterface 'payloads') -Force
+    Write-Utf8 (Join-Path $nestedInterface 'request.toml') "method = `"GET`"`npath = `"/nested`"`nheaders = []`n"
+    $nestedOutput = @(& $cli 'meps/sendEstateClaim' -NoDotEnv)
+    Assert-True ($LASTEXITCODE -eq 0 -and ($nestedOutput -join "`n") -match 'HTTP status: 200') 'Nested interface request resolves and runs'
+    $flatInterface = Join-Path $sandbox 'interface\get-user'
+    $null = New-Item -ItemType Directory -Path (Join-Path $flatInterface 'payloads') -Force
+    Write-Utf8 (Join-Path $flatInterface 'request.toml') "method = `"GET`"`npath = `"/flat`"`nheaders = []`n"
+    $flatOutput = @(& $cli get-user -NoDotEnv)
+    Assert-True ($LASTEXITCODE -eq 0 -and ($flatOutput -join "`n") -match 'HTTP status: 200') 'Existing flat interface runs unchanged'
+    $null = & $cli create 'meps/updateEstateClaim'
+    Assert-True ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $sandbox 'interface\meps\updateEstateClaim\request.toml'))) 'Nested interface scaffolding works'
     $out = @(& $cli test -NoDotEnv)
     Assert-True ($LASTEXITCODE -eq 0) 'Real curl GET succeeds'
     Assert-True (($out -join "`n") -notmatch 'RESPONSE-SECRET|RESPONSE-REFRESH|COOKIE-SECRET') 'Terminal redacts response secrets'

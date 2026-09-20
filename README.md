@@ -33,7 +33,7 @@ After configuring your test system:
 .\api.ps1 get-user -Env test -Payload valid.xml -Set 'USER_ID=123'
 ```
 
-The first argument is the interface name. `-Env` defaults to `test`; `-Environment` is an alias. `-Payload` can also be the second positional argument. Paths to the default config, `.env`, interfaces and reports are relative to the project, so the CLI can be invoked from another working directory.
+The first argument is the interface name, optionally grouped one level deep with `/`. `-Env` defaults to `test`; `-Environment` is an alias. `-Payload` can also be the second positional argument. Paths to the default config, `.env`, interfaces and reports are relative to the project, so the CLI can be invoked from another working directory.
 
 ## Layout and extension
 
@@ -44,6 +44,7 @@ config.toml                     Ignored local configuration
 .env.example / .env             Credential template / ignored local secrets
 interface/<name>/request.toml   Request definition
 interface/<name>/payloads/      JSON, XML, text or binary payload files
+interface/<group>/<name>/       Optional one-level interface grouping
 lib/Common.ps1                 Configuration, validation and payload helpers
 lib/Invoke-Curl.ps1            Curl execution, status checks and reports
 lib/Redaction.ps1              Shared output sanitization
@@ -57,9 +58,28 @@ Create an interface without needing configuration or credentials:
 
 ```powershell
 .\api.ps1 create invoice-search
+.\api.ps1 create meps/updateEstateClaim
 ```
 
-Names must start with a letter or digit and contain only letters, digits, `_` or `-`, up to 80 characters. Windows device names are rejected. Existing interfaces are never overwritten. Edit the generated TOML and add payload files; do not add a separate endpoint script.
+Names must start with a letter or digit and contain only letters, digits, `_` or `-`, up to 80 characters per segment. One `/` may separate a group and interface name. Absolute paths, backslashes, empty segments, `.`, `..`, Windows device names, and deeper paths are rejected. Existing interfaces are never overwritten. Edit the generated TOML and add payload files; do not add a separate endpoint script.
+
+For example:
+
+```text
+interface/
+└── meps/
+    ├── sendEstateClaim/
+    │   ├── request.toml
+    │   └── payloads/
+    ├── updateEstateClaim/
+    │   ├── request.toml
+    │   └── payloads/
+    └── getClaimStatus/
+        ├── request.toml
+        └── payloads/
+```
+
+Run a grouped interface with `.\api.ps1 meps/sendEstateClaim -Env test -Payload valid.xml`. Saved reports replace `/` with `-` in the report filename while retaining the grouped name in request metadata.
 
 ## Configuration and supported TOML
 
