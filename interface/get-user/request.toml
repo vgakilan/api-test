@@ -1,0 +1,3 @@
+method = "POST"
+path = "/post"
+headers = ["Accept: text/xml", "Content-Type: text/xml; charset=utf-8", "SOAPAction: GetUser", "Authorization: Bearer {{API_TOKEN}}"]

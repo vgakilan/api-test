@@ -1,0 +1,12 @@
+# Non-secret project settings. Secrets are loaded from .env.
+[defaults]
+user_agent = "api-test/1.0"
+
+[environments.test]
+base_url = "https://httpbin.org"
+
+[environments.test.values]
+resource = "users"
+
+[environments.local]
+base_url = "http://localhost:8080"

@@ -1,0 +1,3 @@
+method = "POST"
+path = "/post"
+headers = ["Accept: application/json", "Content-Type: application/json", "User-Agent: {{user_agent}}", "Authorization: Bearer {{API_TOKEN}}"]

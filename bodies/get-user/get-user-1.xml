@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <GetUser xmlns="http://example.com/users">
-      <UserId>123</UserId>
-    </GetUser>
-  </soap:Body>
-</soap:Envelope>

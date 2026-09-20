@@ -1,0 +1,4 @@
+method = "GET"
+path = "/get"
+query = ["resource={{resource}}"]
+headers = ["Accept: application/json", "User-Agent: {{user_agent}}", "Authorization: Bearer {{API_TOKEN}}"]

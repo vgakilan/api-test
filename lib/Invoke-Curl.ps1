@@ -29,7 +29,10 @@ try {
     )
     if ($DebugMode) { $curlOptions += "--verbose" }
 
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     $metrics = & curl.exe @curlOptions @CurlArguments 2> $diagnosticFile
+    $ErrorActionPreference = $previousErrorActionPreference
     $curlExitCode = $LASTEXITCODE
     $finishedAt = Get-Date
 

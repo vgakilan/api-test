@@ -1,228 +1,95 @@
-# Terminal API Client
+# api-test
 
-A curl-based API client managed from PowerShell. It supports reusable environments, request definitions, JSON/XML payloads, response metadata, and readable terminal output without requiring Bruno or Postman.
+A PowerShell-first API testing CLI built on `curl.exe`. Requests are readable TOML, payloads stay in files, and `.env` is reserved for secrets and credentials.
 
 ## Requirements
 
 - Windows PowerShell 5.1+ or PowerShell 7+
-- `curl.exe` 8+
-- `bat` is optional and is used for syntax-highlighted response bodies
+- `curl.exe`
+- `bat` is optional for syntax-highlighted output
 
-Verify curl:
-
-```powershell
-curl.exe --version
-```
-
-Verify bat, if installed:
+## Quick start
 
 ```powershell
-bat.exe --version
+Copy-Item .env.example .env
+.\api.ps1 create-user -Env test -Payload valid.json
+.\api.ps1 users-list -Env test
 ```
 
-## Usage
+The root entry point is `api.ps1`. The first argument is the interface name. `-Env` selects an environment, and `-Payload` selects a file below that interface's `payloads` directory.
 
-The general command format is:
-
-```powershell
-.\api.ps1 <environment> <request> [body-name-or-path]
-```
-
-Examples:
-
-```powershell
-.\api.ps1 test users-list
-.\api.ps1 test user-create
-.\api.ps1 test user-create user-create-1
-.\api.ps1 test get-user get-user-1
-```
-
-Save a complete Markdown debug report by adding `-Save`:
-
-```powershell
-.\api.ps1 test user-create user-create-1 -Save
-```
-
-Reports are created automatically under:
-
-```text
-runs\YYYY-MM-DD\HH-mm-ss_environment_request.md
-```
-
-Each report contains run metadata, request method and URL, redacted request headers, request body, response headers, response body, HTTP status, timing, downloaded bytes, and curl errors. The terminal output is still displayed normally.
-
-## Debugging
-
-Use the native PowerShell `-Debug` switch to enable curl verbose diagnostics:
-
-```powershell
-.\api.ps1 test user-create user-create-1 -Debug
-```
-
-Combine it with `-Save` to include the diagnostics in the Markdown report:
-
-```powershell
-.\api.ps1 test user-create user-create-1 -Debug -Save
-```
-
-Debug output includes connection, DNS, TLS, request, and response details. It may contain sensitive information, so use it carefully. Saved reports redact common sensitive headers such as `Authorization`, cookies, tokens, secrets, and API keys.
-
-The third argument is optional. When supplied, the client searches the `bodies` directory recursively by filename. Extensions are optional, so `user-create-1` can resolve to `user-create-1.json` and `get-user-1` can resolve to `get-user-1.xml`.
-
-If multiple files have the same name but different extensions, provide an explicit path or extension.
-
-## Directory structure
+## Layout
 
 ```text
 api-test/
-├── api.ps1                 # Main command-line entry point
-├── environments/           # Environment-specific variables
-│   └── test.ps1
-├── requests/               # Reusable endpoint definitions
-│   ├── get-user.ps1
-│   ├── user-create.ps1
-│   └── users-list.ps1
-├── bodies/                 # JSON, XML, or other request payloads
-│   ├── create-user/
-│   └── get-user/
-└── lib/                    # Shared PowerShell infrastructure
-    └── Invoke-Curl.ps1
+├── api.ps1                    # Single CLI entry point
+├── config.toml                # Non-secret environments and defaults
+├── .env                       # Local secrets; never committed
+├── interface/
+│   └── create-user/
+│       ├── request.toml       # Method, path, headers, query
+│       └── payloads/           # JSON, XML, text, multipart, etc.
+└── lib/Invoke-Curl.ps1        # curl execution and reporting
 ```
 
-## Environments
-
-Environment files define values shared by requests, such as the base URL and authentication token:
+Create a new interface at any time:
 
 ```powershell
-$env:API_BASE_URL = "https://api-test.example.com"
-$env:API_TOKEN = "replace-me"
+.\api.ps1 create invoice-search
 ```
 
-Do not commit real credentials. Prefer a local, ignored secrets file or secure environment variables for tokens and client secrets.
+This creates `interface/invoice-search/request.toml` and its `payloads` directory.
 
-To add another environment:
+## Configuration
 
-1. Create `environments\staging.ps1` or `environments\prod.ps1`.
-2. Define the required environment variables.
-3. Run the same request with the new environment name.
+`config.toml` contains non-secret settings:
 
-Example:
+```toml
+[defaults]
+user_agent = "api-test/1.0"
+
+[environments.test]
+base_url = "https://httpbin.org"
+
+[environments.test.values]
+tenant = "demo"
+```
+
+An interface request is intentionally small:
+
+```toml
+method = "POST"
+path = "/post"
+query = ["tenant={{tenant}}"]
+headers = [
+  "Accept: application/json",
+  "Content-Type: application/json",
+  "Authorization: Bearer {{API_TOKEN}}"
+]
+```
+
+Use `{{name}}` placeholders in URLs, query strings, headers, and payload files. Values are resolved from the selected environment, `[environment.values]`, defaults, process environment variables, and finally `-Set name=value` overrides. `.env` is loaded automatically and should contain only secrets/credentials.
+
+## CLI overrides
 
 ```powershell
-.\api.ps1 staging user-create user-create-1
+.\api.ps1 create-user -Env test -Payload valid.json `
+  -Header 'X-Correlation-Id: quick-check' `
+  -Query 'debug=true' `
+  -Set 'tenant=staging' `
+  -Save
 ```
 
-## Request definitions
+Useful options include `-Url`, `-Method`, repeated `-Header`, repeated `-Query`, repeated `-Set`, `-Body` (a file path or inline text), `-Save`, and `-DebugMode`.
 
-Each request definition is a PowerShell script that builds curl arguments. It should describe the HTTP method, URL, headers, authentication, and body handling.
+The shared runner displays response headers, response body, status, duration, and downloaded bytes. `-Save` writes a redacted Markdown report below `runs/`, which is gitignored.
 
-Example JSON request:
+## CI/CD
+
+Set credentials as CI environment variables or create a CI-only `.env` outside version control, then run the same command used locally:
 
 ```powershell
-$arguments = @(
-    "--request", "POST",
-    "--url", "$env:API_BASE_URL/users",
-    "--header", "Accept: application/json",
-    "--header", "Content-Type: application/json",
-    "--header", "Authorization: Bearer $env:API_TOKEN",
-    "--data-binary", "@$BodyFile"
-)
+.\api.ps1 create-user -Env test -Payload valid.json
 ```
 
-Example SOAP request:
-
-```powershell
-$arguments = @(
-    "--request", "POST",
-    "--url", "$env:API_BASE_URL/users",
-    "--header", "Content-Type: text/xml; charset=utf-8",
-    "--header", "Accept: text/xml",
-    "--header", "SOAPAction: GetUser",
-    "--data-binary", "@$BodyFile"
-)
-```
-
-Request scripts should call the shared helper:
-
-```powershell
-& (Join-Path $PSScriptRoot "..\lib\Invoke-Curl.ps1") -CurlArguments $arguments
-exit $LASTEXITCODE
-```
-
-## Request bodies
-
-Keep large payloads in separate files:
-
-- `.json` for JSON APIs
-- `.xml` for SOAP or XML APIs
-- Other extensions when required by the service
-
-Payload files are selected by name:
-
-```powershell
-.\api.ps1 test user-create user-create-1
-.\api.ps1 test get-user get-user-1
-```
-
-The request definition controls the content type; the body file contains only the payload.
-
-## Response output
-
-The shared helper displays:
-
-- HTTP response headers
-- JSON bodies with PowerShell formatting and optional `bat` highlighting
-- Plain text or XML bodies without JSON conversion
-- HTTP status code
-- Total request time
-- Downloaded byte count
-- Curl errors
-
-The helper uses temporary files for response separation and removes them after each request.
-
-## Security guidelines
-
-- Never commit access tokens, passwords, private keys, or client secrets.
-- Do not place secrets directly in request scripts or body files.
-- Use environment variables or a local ignored secrets file.
-- Use HTTPS for non-local services.
-- Review headers and payloads before running requests against production.
-- Keep production environment files separate from test credentials.
-
-## Troubleshooting
-
-### Request file not found
-
-The request name must match a file under `requests`:
-
-```text
-requests\user-create.ps1
-```
-
-Run it with:
-
-```powershell
-.\api.ps1 test user-create
-```
-
-### Body file not found
-
-Check that the body exists below `bodies` and that its filename is unique:
-
-```text
-bodies\create-user\user-create-1.json
-```
-
-### HTTP status 000
-
-Curl did not receive an HTTP response. Check the URL, DNS, VPN, proxy, TLS configuration, and network connectivity.
-
-### PowerShell blocks script execution
-
-Use an appropriate execution policy for your environment. For a user-scoped development setup:
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-```
-
-Follow your organization’s security policy for managed machines.
+The process exits with curl's exit code, so transport failures are suitable for pipeline failure handling. HTTP status handling remains visible in the report and terminal output.
