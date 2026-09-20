@@ -1,219 +1,126 @@
-param(
-    [Parameter(Mandatory = $true)]
-    [string[]]$CurlArguments,
-
-    [switch]$SaveReport,
-
-    [switch]$DebugMode,
-
-    [string]$RequestName = "request",
-
-    [string]$ServiceName = "service",
-
-    [string]$BodyFile = ""
-)
-
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
-$startedAt = Get-Date
-
-$headersFile = [System.IO.Path]::GetTempFileName()
-$responseBodyFile = [System.IO.Path]::GetTempFileName()
-$diagnosticFile = [System.IO.Path]::GetTempFileName()
-
-function Redact-Text([string]$Text) {
-    if ($null -eq $Text) { return "" }
-    $result = $Text
-    $result = $result -replace '(?im)^((?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|.*(?:token|secret|password|api[-_]?key))\s*:\s*).*$','$1[REDACTED]'
-    $result = $result -replace '(?i)("(?:password|passcode|token|access_token|refresh_token|client_secret|secret|api[_-]?key)"\s*:\s*")[^"]*(")','$1[REDACTED]$2'
-    $result = $result -replace '(?i)(<(?:password|passcode|token|access_token|refresh_token|client_secret|secret|api[_-]?key)>)[^<]*(</(?:password|passcode|token|access_token|client_secret|secret|api[_-]?key)>)','$1[REDACTED]$2'
-    return $result
+function Format-ApiJson([string]$Text) {
+    # This receives only a sanitized preview, never the raw response.
+    if ($Text.TrimStart().StartsWith('{') -or $Text.TrimStart().StartsWith('[')) {
+        try {
+            $wrapper = ConvertFrom-Json -InputObject ('{"value":' + $Text + '}') -ErrorAction Stop
+            return ConvertTo-Json -InputObject $wrapper.value -Depth 100 -ErrorAction Stop -WarningAction Stop
+        } catch { }
+    }
+    return $Text
 }
 
-function Redact-Url([string]$Url) {
-    if ($null -eq $Url) { return "" }
-    return $Url -replace '(?i)([?&](?:token|access_token|refresh_token|secret|password|api[_-]?key)=)[^&]*','$1[REDACTED]'
+function ConvertTo-CurlConfigValue([string]$Value) {
+    if ($Value -match '[\x00-\x1f\x7f]') { Stop-ApiValidation 'Control characters are not allowed in curl options.' }
+    return '"' + $Value.Replace('\', '\\').Replace('"', '\"') + '"'
 }
 
-function Format-HeadersMarkdown([string[]]$HeaderLines) {
-    $rows = @(
-        '| Header | Value |'
-        '| --- | --- |'
+function Invoke-ApiCurl {
+    param(
+        [string]$RequestUrl, [string]$Method, [string[]]$Headers, [string]$BodyFile,
+        [int[]]$ExpectedStatus, [int]$TimeoutSeconds, [int]$ConnectTimeoutSeconds,
+        [long]$MaxResponseBytes, [string]$TemporaryDirectory, [string[]]$SecretValues,
+        [switch]$SaveReport, [switch]$DebugMode, [string]$RequestName,
+        [string]$ServiceName, [string]$EnvironmentName, [string]$ReportRoot
     )
-    foreach ($line in @($HeaderLines)) {
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
-        $trimmed = $line.Trim()
-        if ($trimmed -match '^HTTP/\S+\s+\d+') {
-            $name = 'Status'
-            $value = $trimmed
-        } elseif ($trimmed -match '^([^:]+):\s*(.*)$') {
-            $name = $matches[1].Trim()
-            $value = $matches[2].Trim()
-        } else {
-            $name = 'Info'
-            $value = $trimmed
-        }
-        $name = $name -replace '\|', '\|'
-        $value = $value -replace '\|', '\|'
-        $rows += "| $name | $value |"
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $versionText = & $curl.Source --disable --version
+    if ($LASTEXITCODE -ne 0 -or $versionText[0] -notmatch '^curl (\d+\.\d+\.\d+)' -or [version]$matches[1] -lt [version]'8.4.0') { Stop-ApiValidation 'curl 8.4.0 or newer is required.' }
+    $started = Get-Date
+    $headersPath = Join-Path $TemporaryDirectory 'response-headers'
+    $bodyPath = Join-Path $TemporaryDirectory 'response-body'
+    $options = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($flag in @('silent','show-error','globoff')) { $options.Add($flag) }
+    $options.Add('proto = "=http,https"')
+    $options.Add('connect-timeout = ' + $ConnectTimeoutSeconds)
+    $options.Add('max-time = ' + $TimeoutSeconds)
+    $options.Add('max-filesize = ' + $MaxResponseBytes)
+    $options.Add('dump-header = ' + (ConvertTo-CurlConfigValue $headersPath))
+    $options.Add('output = ' + (ConvertTo-CurlConfigValue $bodyPath))
+    $options.Add('write-out = "%{http_code}|%{time_total}|%{size_download}"')
+    if ($Method -eq 'HEAD') { $options.Add('head') } else { $options.Add('request = ' + (ConvertTo-CurlConfigValue $Method)) }
+    $options.Add('url = ' + (ConvertTo-CurlConfigValue $RequestUrl))
+    foreach ($header in $Headers) { $options.Add('header = ' + (ConvertTo-CurlConfigValue $header)) }
+    if ($BodyFile) { $options.Add('data-binary = ' + (ConvertTo-CurlConfigValue ('@' + $BodyFile))) }
+    if ($DebugMode) { $options.Add('verbose') }
+
+    # Only fixed arguments are visible in the process list. Sensitive options go over stdin.
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $curl.Source
+    $startInfo.Arguments = '--disable --config -'
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
+    $startInfo.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $startedProcess = $false
+    try {
+        $startedProcess = $process.Start()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $configBytes = [Text.Encoding]::UTF8.GetBytes(($options -join "`n") + "`n")
+        $process.StandardInput.BaseStream.Write($configBytes, 0, $configBytes.Length)
+        $process.StandardInput.BaseStream.Flush()
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(($TimeoutSeconds + 5) * 1000)) {
+            $process.Kill(); $process.WaitForExit(); $curlExit = 28
+        } else { $curlExit = $process.ExitCode }
+        $metrics = $stdoutTask.GetAwaiter().GetResult().Trim()
+        $diagnostics = $stderrTask.GetAwaiter().GetResult()
+    } finally {
+        if ($startedProcess -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+        $process.Dispose()
     }
-    if ($rows.Count -eq 2) { $rows += '| (none) | |' }
-    return ($rows -join "`n")
-}
-
-try {
-    $curlOptions = @(
-        "--silent",
-        "--show-error",
-        "--dump-header", $headersFile,
-        "--output", $responseBodyFile,
-        "--write-out", "%{http_code}|%{time_total}|%{size_download}"
-    )
-    if ($DebugMode) { $curlOptions += "--verbose" }
-
-    $previousErrorActionPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    $metrics = & curl.exe @curlOptions @CurlArguments 2> $diagnosticFile
-    $ErrorActionPreference = $previousErrorActionPreference
-    $curlExitCode = $LASTEXITCODE
-    $finishedAt = Get-Date
-
-    $requestMethod = "GET"
-    $requestUrl = ""
-    $requestHeaders = @()
-    $requestBody = ""
-    for ($index = 0; $index -lt $CurlArguments.Count; $index++) {
-        switch ($CurlArguments[$index]) {
-            "--request" { $requestMethod = $CurlArguments[++$index] }
-            "--url" { $requestUrl = $CurlArguments[++$index] }
-            "--header" { $requestHeaders += $CurlArguments[++$index] }
-            "--data-binary" {
-                $dataArgument = $CurlArguments[++$index]
-                if ($dataArgument.StartsWith("@")) { $BodyFile = $dataArgument.Substring(1) }
-                else { $requestBody = $dataArgument }
-            }
-            "--data-raw" { $requestBody = $CurlArguments[++$index] }
-        }
+    $status = 0; $duration = 'unavailable'; $downloaded = 'unavailable'
+    if ($metrics -match '^(\d{3})\|([0-9.]+)\|([0-9]+)$') {
+        $status = [int]$matches[1]; $duration = $matches[2]; $downloaded = $matches[3]
+    } elseif ($curlExit -eq 0) { $curlExit = 2 }
+    $exitCode = $curlExit
+    if ($exitCode -eq 0 -and $status -notin $ExpectedStatus) { $exitCode = 22 }
+    $responseHeaders = Read-SafePreview $headersPath $SecretValues -Headers
+    $responseBody = if ($Method -eq 'HEAD') { '(HEAD response has no body)' } else { Read-SafePreview $bodyPath $SecretValues }
+    $responseBody = Format-ApiJson $responseBody
+    $displayBody = $responseBody
+    $bat = Get-Command bat.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($bat) {
+        try {
+            # A UTF-8 file avoids Windows PowerShell's lossy native stdin encoding.
+            $displayPath = Join-Path $TemporaryDirectory 'sanitized-preview'
+            Write-Utf8 $displayPath $responseBody
+            $language = if ($responseBody.TrimStart().StartsWith('<')) { 'xml' } elseif ($responseBody.TrimStart() -match '^[\[{]') { 'json' } else { 'txt' }
+            $batArguments = @('--no-config', '--language', $language, '--style', 'plain', '--paging', 'never', '--color', 'always', '--', $displayPath)
+            $highlighted = @(& $bat.Source @batArguments 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $highlighted.Count -gt 0) { $displayBody = $highlighted -join "`n" }
+        } catch { } # Optional highlighting must never prevent readable output.
     }
-    if ($BodyFile -and (Test-Path -LiteralPath $BodyFile -PathType Leaf)) {
-        $requestBody = Get-Content -Raw $BodyFile
-    }
-
-    $responseHeaders = Get-Content -Raw $headersFile
-    $responseBody = Get-Content -Raw $responseBodyFile
-    $curlError = Get-Content -Raw $diagnosticFile
-    if ($null -eq $responseHeaders) { $responseHeaders = "" }
-    if ($null -eq $responseBody) { $responseBody = "" }
-    if ($null -eq $curlError) { $curlError = "" }
-
-    $metricText = ([string]$metrics).Trim()
-    $metricValues = if ($metricText -match "\|") { $metricText -split "\|" } else { @("unavailable", "unavailable", "unavailable") }
-
-    $displayBody = $responseBody.TrimEnd()
-    if ($responseBody.Trim()) {
-        try { $displayBody = $responseBody | ConvertFrom-Json | ConvertTo-Json -Depth 100 } catch { }
-    }
-
-    Write-Output "=== Response headers ==="
-    if ($responseHeaders.Trim()) { $responseHeaders.TrimEnd() }
-    Write-Output ""
-    Write-Output "=== Response body ==="
-    if ($displayBody) {
-        if (Get-Command bat.exe -ErrorAction SilentlyContinue) {
-            $displayLanguage = if ($responseBody.TrimStart().StartsWith("<")) { "xml" } else { "json" }
-            $displayBody | bat.exe --language $displayLanguage --style plain --paging never --color always --file-name "response.$displayLanguage"
-        } else { $displayBody }
-    }
-    Write-Output ""
-    Write-Output "=== Request details ==="
-    Write-Output ("HTTP status:    {0}" -f $metricValues[0])
-    Write-Output ("Time:           {0} seconds" -f $metricValues[1])
-    Write-Output ("Downloaded:     {0} bytes" -f $metricValues[2])
-    if ($DebugMode -and $curlError.Trim()) {
-        Write-Output ""
-        Write-Output "=== curl debug ==="
-        $curlError.TrimEnd()
-    } elseif ($curlError.Trim()) {
-        Write-Output ""
-        Write-Output "=== curl error ==="
-        $curlError.TrimEnd()
-    }
-
+    $safeDiagnostics = if ($diagnostics.Length -gt 262144) { '(diagnostics omitted: exceeds 256 KiB preview limit)' } else { Protect-ApiText $diagnostics $SecretValues }
+    $output = New-Object 'System.Collections.Generic.List[string]'
+    $output.Add("=== Response headers ===`n$responseHeaders")
+    $output.Add("=== Response body ===`n$displayBody")
+    $output.Add("HTTP status: $status`nTime: $duration seconds`nDownloaded: $downloaded bytes`nExit code: $exitCode")
+    if ($safeDiagnostics) { $output.Add("=== curl diagnostics ===`n$safeDiagnostics") }
     if ($SaveReport) {
-        $root = Split-Path -Parent $PSScriptRoot
-        $reportDirectory = Join-Path $root ("runs\" + $startedAt.ToString("yyyy-MM-dd"))
-        $reportName = "{0}_{1}_{2}_{3}.md" -f $startedAt.ToString("HH-mm-ss-fff"), $env:API_ENVIRONMENT, $ServiceName, $RequestName
-        $reportPath = Join-Path $reportDirectory ($reportName -replace '[^a-zA-Z0-9_.-]', '_')
-        New-Item -ItemType Directory -Path $reportDirectory -Force | Out-Null
-
-        $safeRequestHeaders = $requestHeaders | ForEach-Object { Redact-Text $_ }
-        $safeResponseHeaders = Redact-Text $responseHeaders
-        $safeRequestUrl = Redact-Url $requestUrl
-        $requestHeadersMarkdown = Format-HeadersMarkdown $safeRequestHeaders
-        $responseHeadersMarkdown = Format-HeadersMarkdown ($safeResponseHeaders -split "`r?`n")
-        $requestLanguage = if ($BodyFile -match '\.xml$') { "xml" } elseif ($BodyFile -match '\.json$') { "json" } else { "text" }
-        $responseLanguage = if ($responseBody.TrimStart().StartsWith("<")) { "xml" } elseif ($responseBody.TrimStart().StartsWith("{")) { "json" } else { "text" }
-        $requestBodyText = if ($requestBody) { (Redact-Text $requestBody).TrimEnd() } else { "(none)" }
-        $responseBodyText = if ($displayBody) { (Redact-Text $displayBody).TrimEnd() } else { "(empty)" }
-        $errorText = if ($DebugMode -and $curlError.Trim()) { "See Curl debug output below." } elseif ($curlError.Trim()) { $curlError.TrimEnd() } else { "None" }
-        $safeDebugText = $errorText -replace '(?im)^([>\<]\s*)(Authorization|Cookie|Set-Cookie):.*$', '$1$2: [REDACTED]'
-        $report = @"
-# API Run Report
-
-## Run information
-
-- Started: $($startedAt.ToString("o"))
-- Finished: $($finishedAt.ToString("o"))
-- Service: $ServiceName
-- Interface: $RequestName
-- Environment: $env:API_ENVIRONMENT
-- Request payload: $(if ($BodyFile) { $BodyFile } else { "(none)" })
-- Curl exit code: $curlExitCode
-- HTTP status: $($metricValues[0])
-- Duration: $($metricValues[1]) seconds
-- Downloaded: $($metricValues[2]) bytes
-
-## Request
-
-### Method and URL
-
-$requestMethod $safeRequestUrl
-
-### Headers
-
-$requestHeadersMarkdown
-
-### Body
-
-~~~$requestLanguage
-$requestBodyText
-~~~
-
-## Response
-
-### Headers
-
-$responseHeadersMarkdown
-
-### Body
-
-~~~$responseLanguage
-$responseBodyText
-~~~
-
-## Errors
-
-~~~text
-$errorText
-~~~
-$(if ($DebugMode) { "`n## Curl debug output`n`n~~~text`n$safeDebugText`n~~~" })
-"@
-        Set-Content -LiteralPath $reportPath -Value $report -Encoding utf8
-        Write-Output ""
-        Write-Output "Saved report: $reportPath"
+        $directory = Join-Path $ReportRoot $started.ToString('yyyy-MM-dd')
+        $null = New-Item -ItemType Directory -Path $directory -Force
+        $name = '{0}_{1}_{2}.md' -f $started.ToString('HH-mm-ss-fff'), $RequestName, [guid]::NewGuid().ToString('N')
+        $reportPath = Join-Path $directory $name
+        $requestBody = if ($BodyFile) { Format-ApiJson (Read-SafePreview $BodyFile $SecretValues) } else { '(none)' }
+        $safeUrl = Protect-ApiText $RequestUrl $SecretValues
+        $safeHeaders = Protect-ApiText ($Headers -join "`n") $SecretValues
+        $safeMetadata = Protect-ApiText "Service: $ServiceName`nInterface: $RequestName`nEnvironment: $EnvironmentName" $SecretValues
+        $report = "# API Run Report`n`nHTTP $status | $duration seconds | $downloaded bytes`n`n## Summary`n`n"
+        $report += ConvertTo-ReportTable "$safeMetadata`nStarted: $($started.ToString('o'))`nFinished: $((Get-Date).ToString('o'))`nCurl exit code: $curlExit`nResult exit code: $exitCode"
+        $report += "`n## Request`n`n" + (ConvertTo-ReportBlock "$Method $safeUrl")
+        $report += "`n### Headers`n`n" + (ConvertTo-ReportTable $safeHeaders)
+        $report += "`n### Body`n`n" + (ConvertTo-ReportBlock $requestBody (Get-PreviewLanguage $requestBody))
+        $report += "`n## Response`n`n### Headers`n`n" + (ConvertTo-ReportTable $responseHeaders)
+        $report += "`n### Body`n`n" + (ConvertTo-ReportBlock $responseBody (Get-PreviewLanguage $responseBody))
+        if ($safeDiagnostics) { $report += "`n## Curl diagnostics`n`n" + (ConvertTo-ReportBlock $safeDiagnostics) }
+        Write-Utf8 $reportPath $report
+        $output.Add("Saved report: $reportPath")
     }
-
-    exit $curlExitCode
-} finally {
-    Remove-Item -LiteralPath $headersFile, $responseBodyFile, $diagnosticFile -Force -ErrorAction SilentlyContinue
+    return [pscustomobject]@{ ExitCode = $exitCode; Output = $output.ToArray() }
 }

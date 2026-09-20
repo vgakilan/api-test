@@ -10,9 +10,3 @@ config.toml
 AGENTS.md
 .codex/
 .agents/
-
-# Local Codex customization. Keep agent instructions, subagents, skills,
-# hooks, and development standards machine-specific.
-AGENTS.md
-.codex/
-.agents/

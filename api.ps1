@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [Parameter(Position = 0)] [string]$Command,
-    [Parameter(Position = 1)] [string]$Payload,
+    [Parameter(Position = 0)][string]$Command,
+    [Parameter(Position = 1)][string]$Payload,
     [Alias('Environment')][string]$Env = 'test',
     [string]$Config,
     [string]$Url,
@@ -10,6 +10,12 @@ param(
     [string[]]$Query = @(),
     [string[]]$Set = @(),
     [string]$Body,
+    [int[]]$ExpectedStatus = @(),
+    [ValidateRange(1,3600)][int]$TimeoutSeconds = 60,
+    [ValidateRange(1,300)][int]$ConnectTimeoutSeconds = 10,
+    [ValidateRange(1,104857600)][long]$MaxResponseBytes = 10485760,
+    [switch]$RawPayload,
+    [switch]$NoDotEnv,
     [switch]$Save,
     [switch]$DebugMode,
     [switch]$Help
@@ -17,164 +23,140 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ([string]::IsNullOrWhiteSpace($Config)) { $Config = Join-Path $PSScriptRoot 'config.toml' }
-
-function Show-Help {
-    @"
+if ($Help -or [string]::IsNullOrWhiteSpace($Command)) {
+    @'
 PowerShell API test CLI
 
-Run an interface:
   .\api.ps1 <interface> -Env test [-Payload valid.json] [-Set key=value]
-
-Create an interface:
   .\api.ps1 create <interface-name>
 
-Overrides:
-  -Url <url> -Method GET|POST|PUT|PATCH|DELETE -Header 'Name: value'
-  -Query 'name=value' -Set 'path=value' -Body <file-or-text> -Save -Debug
+Overrides (array options are supplied once, with comma-separated values):
+  -Url <http(s)-url> -Method GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS
+  -Header 'Name: value','Other: value' -Query 'name=value','other=value'
+  -Set 'name=value' -Body <file-or-text> -ExpectedStatus 200,201
+  -TimeoutSeconds 60 -ConnectTimeoutSeconds 10 -MaxResponseBytes 10485760
+  -RawPayload -NoDotEnv -Save -DebugMode -Help
 
-Examples:
-  .\api.ps1 create-user -Env test -Payload valid.json
-  .\api.ps1 users-list -Env test -Query 'active=true'
-"@
-}
-
-if ($Help -or [string]::IsNullOrWhiteSpace($Command)) { Show-Help; exit 0 }
-
-function Read-DotEnv([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
-    foreach ($line in Get-Content -LiteralPath $Path) {
-        if ($line -match '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$') {
-            $value = $matches[2].Trim()
-            if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) { $value = $value.Substring(1, $value.Length - 2) }
-            [Environment]::SetEnvironmentVariable($matches[1], $value)
-        }
-    }
-}
-
-function Parse-Toml([string]$Path) {
-    $root = @{}
-    $section = $root
-    $lines = @(Get-Content -LiteralPath $Path)
-    for ($lineIndex = 0; $lineIndex -lt $lines.Count; $lineIndex++) {
-        $line = $lines[$lineIndex]
-        while ($line -match '=\s*\[' -and $line -notmatch '\]\s*(?:#.*)?$' -and ($lineIndex + 1) -lt $lines.Count) {
-            $lineIndex++
-            $line += ' ' + $lines[$lineIndex].Trim()
-        }
-        $line = ($line -replace '\s*#.*$', '').Trim()
-        if (-not $line) { continue }
-        if ($line -match '^\[([^\]]+)\]$') {
-            $section = $root
-            foreach ($part in ($matches[1] -split '\.')) {
-                if (-not $section.ContainsKey($part)) { $section[$part] = @{} }
-                $section = $section[$part]
-            }
-            continue
-        }
-        if ($line -notmatch '^([^=]+)=(.*)$') { throw "Invalid TOML line in $Path`: $line" }
-        $key = $matches[1].Trim(); $raw = $matches[2].Trim()
-        if ($raw -match '^"(.*)"$') { $value = $matches[1] -replace '\\n', "`n" -replace '\\"', '"' }
-        elseif ($raw -match "^'(.*)'$") { $value = $matches[1] }
-        elseif ($raw -match '^\[(.*)\]$') { $value = @($matches[1] -split ',' | ForEach-Object { $_.Trim().Trim('"').Trim("'") } | Where-Object { $_ -ne '' }) }
-        elseif ($raw -match '^(true|false)$') { $value = [bool]::Parse($raw) }
-        elseif ($raw -match '^-?\d+(\.\d+)?$') { $value = [double]$raw }
-        else { $value = $raw }
-        $section[$key] = $value
-    }
-    return $root
-}
-
-function Get-Value($Map, [string]$Key, $Default = $null) {
-    if ($null -ne $Map -and $Map.ContainsKey($Key)) { return $Map[$Key] }
-    return $Default
-}
-
-function Expand-Value([string]$Value, [hashtable]$Values) {
-    if ($null -eq $Value) { return $Value }
-    return [regex]::Replace($Value, '\{\{\s*([^}]+?)\s*\}\}', { param($m)
-        $name = $m.Groups[1].Value
-        if ($Values.ContainsKey($name)) { return [string]$Values[$name] }
-        $envValue = [Environment]::GetEnvironmentVariable($name)
-        if ($null -ne $envValue) { return $envValue }
-        return $m.Value
-    })
-}
-
-function Find-Payload([string]$InterfacePath, [string]$Name) {
-    if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
-    $candidate = if ([IO.Path]::IsPathRooted($Name)) { $Name } else { Join-Path (Join-Path $InterfacePath 'payloads') $Name }
-    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return (Resolve-Path -LiteralPath $candidate).Path }
-    $matches = @(Get-ChildItem -LiteralPath (Join-Path $InterfacePath 'payloads') -File -Recurse | Where-Object { $_.Name -eq $Name -or $_.BaseName -eq $Name })
-    if ($matches.Count -eq 1) { return $matches[0].FullName }
-    if ($matches.Count -gt 1) { throw "Payload '$Name' is ambiguous." }
-    throw "Payload not found: $Name"
-}
-
-Read-DotEnv (Join-Path $PSScriptRoot '.env')
-
-if ($Command -eq 'create') {
-    if ([string]::IsNullOrWhiteSpace($Payload)) { throw 'Usage: .\api.ps1 create <interface-name>' }
-    $interfacePath = Join-Path $PSScriptRoot (Join-Path 'interface' $Payload)
-    if (Test-Path -LiteralPath $interfacePath) { throw "Interface already exists: $Payload" }
-    New-Item -ItemType Directory -Path (Join-Path $interfacePath 'payloads') -Force | Out-Null
-    @"
-method = "GET"
-path = "/"
-headers = []
-"@ | Set-Content -LiteralPath (Join-Path $interfacePath 'request.toml') -Encoding utf8
-    Write-Output "Created interface/$Payload with request.toml and payloads/"
+Defaults: only HTTP 2xx succeeds; no redirects or retries; redacted output.
+Use -DebugMode for curl diagnostics (-Debug is PowerShell's common parameter).
+See README.md for supported TOML, payload handling, security, and exit codes.
+'@
     exit 0
 }
 
-if (-not (Test-Path -LiteralPath $Config -PathType Leaf)) { throw "Config not found: $Config" }
-$settings = Parse-Toml $Config
-$env:API_ENVIRONMENT = $Env
-$env:API_REQUEST = $Command
-$interfacePath = Join-Path $PSScriptRoot (Join-Path 'interface' $Command)
-$requestPath = Join-Path $interfacePath 'request.toml'
-if (-not (Test-Path -LiteralPath $requestPath -PathType Leaf)) { throw "Interface not found: $Command. Create it with '.\api.ps1 create $Command'." }
-$request = Parse-Toml $requestPath
-$serviceName = [string](Get-Value $request 'service' $Command)
-$environment = Get-Value (Get-Value $settings 'environments' @{}) $Env @{}
-$defaults = Get-Value $settings 'defaults' @{}
-$values = @{}
-foreach ($key in $environment.Keys) { if ($environment[$key] -is [hashtable]) { foreach ($nested in $environment[$key].Keys) { $values[$nested] = $environment[$key][$nested] } } else { $values[$key] = $environment[$key] } }
-foreach ($key in $defaults.Keys) { if (-not $values.ContainsKey($key)) { $values[$key] = $defaults[$key] } }
-foreach ($item in $Set) { if ($item -notmatch '^([^=]+)=(.*)$') { throw "Invalid -Set value: $item" }; $values[$matches[1]] = $matches[2] }
-
-$methodValue = if ($Method) { $Method } else { [string](Get-Value $request 'method' 'GET') }
-$baseUrl = [string](Get-Value $environment 'base_url' '')
-$pathValue = [string](Get-Value $request 'path' '/')
-$requestUrl = if ($Url) { $Url } else { (($baseUrl.TrimEnd('/') + '/' + $pathValue.TrimStart('/')).TrimEnd('/')) }
-$requestUrl = Expand-Value $requestUrl $values
-$queryItems = @(Get-Value $request 'query' @()) + $Query
-if ($queryItems.Count -gt 0) { $requestUrl += '?' + (($queryItems | ForEach-Object { Expand-Value $_ $values }) -join '&') }
-$headers = @()
-foreach ($headerValue in @(Get-Value $request 'headers' @())) { $headers += (Expand-Value $headerValue $values) }
-$headers += $Header | ForEach-Object { Expand-Value $_ $values }
-$payloadPath = Find-Payload $interfacePath $Payload
-$temporaryPayload = $null
-if ($Body) {
-    if (Test-Path -LiteralPath $Body -PathType Leaf) { $payloadPath = (Resolve-Path -LiteralPath $Body).Path } else { $payloadPath = Join-Path ([IO.Path]::GetTempPath()) ("api-test-body-{0}.tmp" -f [guid]::NewGuid()); Set-Content -LiteralPath $payloadPath -Value $Body -Encoding utf8; $temporaryPayload = $payloadPath }
-}
-if ($payloadPath) {
-    $raw = Get-Content -Raw -LiteralPath $payloadPath
-    $expanded = Expand-Value $raw $values
-    if ($expanded -ne $raw) {
-        $expandedPath = Join-Path ([IO.Path]::GetTempPath()) ("api-test-payload-{0}{1}" -f [guid]::NewGuid(), [IO.Path]::GetExtension($payloadPath))
-        Set-Content -LiteralPath $expandedPath -Value $expanded -Encoding utf8
-        if ($temporaryPayload) { Remove-Item -LiteralPath $temporaryPayload -Force -ErrorAction SilentlyContinue }
-        $payloadPath = $expandedPath; $temporaryPayload = $expandedPath
-    }
-}
-$arguments = @('--request', $methodValue, '--url', $requestUrl)
-foreach ($headerValue in $headers) { $arguments += @('--header', $headerValue) }
-if ($payloadPath) { $arguments += @('--data-binary', "@$payloadPath") }
+. (Join-Path $PSScriptRoot 'lib\Common.ps1')
+$temporaryDirectory = $null
+$exitCode = 2
 try {
-    & (Join-Path $PSScriptRoot 'lib\Invoke-Curl.ps1') -CurlArguments $arguments -SaveReport:$Save -DebugMode:$DebugMode -RequestName $Command -ServiceName $serviceName -BodyFile $payloadPath
-    $exitCode = $LASTEXITCODE
+    Assert-InterfaceName $Command
+    if ($Command -eq 'create') {
+        Assert-InterfaceName $Payload
+        $interfacePath = Join-Path $PSScriptRoot "interface\$Payload"
+        if (Test-Path -LiteralPath $interfacePath) { Stop-ApiValidation 'Interface already exists.' }
+        $null = New-Item -ItemType Directory -Path (Join-Path $interfacePath 'payloads')
+        Write-Utf8 (Join-Path $interfacePath 'request.toml') "method = `"GET`"`npath = `"/`"`nheaders = []`n"
+        Write-Output "Created interface/$Payload with request.toml and payloads/"
+        exit 0
+    }
+
+    if (-not $Config) { $Config = Join-Path $PSScriptRoot 'config.toml' }
+    $settings = Read-ApiToml $Config
+    Assert-Keys $settings @('defaults','environments') 'configuration'
+    $defaults = Get-Value $settings 'defaults' @{}
+    $environments = Get-Value $settings 'environments' @{}
+    if ($defaults -isnot [hashtable] -or $environments -isnot [hashtable]) { Stop-ApiValidation 'Invalid configuration tables.' }
+    if (-not $environments.ContainsKey($Env)) { Stop-ApiValidation 'Selected environment does not exist.' }
+    $environment = $environments[$Env]
+    if ($environment -isnot [hashtable]) { Stop-ApiValidation 'Invalid environment table.' }
+    Assert-Keys $environment @('base_url','values') 'environment'
+    if ($environment.ContainsKey('base_url') -and $environment.base_url -isnot [string]) { Stop-ApiValidation 'Environment base_url must be a string.' }
+    $environmentValues = Get-Value $environment 'values' @{}
+    if ($environmentValues -isnot [hashtable]) { Stop-ApiValidation 'Environment values must be a table.' }
+
+    $interfacePath = Join-Path $PSScriptRoot "interface\$Command"
+    $request = Read-ApiToml (Join-Path $interfacePath 'request.toml')
+    Assert-Keys $request @('service','method','path','headers','query','expected_status') 'request'
+    if ($request.ContainsKey('expected_status') -and $request.expected_status -isnot [array]) { Stop-ApiValidation 'expected_status must be an array of integers.' }
+    foreach ($key in @('service','method','path')) {
+        if ($request.ContainsKey($key) -and $request[$key] -isnot [string]) { Stop-ApiValidation 'Request service, method and path must be strings.' }
+    }
+    $values = @{}
+    foreach ($key in $defaults.Keys) { $values[$key] = $defaults[$key] }
+    foreach ($key in $environmentValues.Keys) { $values[$key] = $environmentValues[$key] }
+    $values['base_url'] = Get-Value $environment 'base_url' ''
+    $secretValues = New-Object 'System.Collections.Generic.List[string]'
+    if (-not $NoDotEnv) {
+        $dotenv = Read-ApiDotEnv (Join-Path $PSScriptRoot '.env')
+        foreach ($key in $dotenv.Keys) { $values[$key] = $dotenv[$key]; $secretValues.Add([string]$dotenv[$key]) }
+    }
+    foreach ($entry in [Environment]::GetEnvironmentVariables().GetEnumerator()) {
+        $values[[string]$entry.Key] = [string]$entry.Value
+        if ([string]$entry.Key -match '(?i)token|secret|password|passcode|api.?key|credential|authorization|cookie') { $secretValues.Add([string]$entry.Value) }
+    }
+    foreach ($item in $Set) {
+        if ($item -notmatch '^([A-Za-z_][A-Za-z0-9_.-]*)=(.*)$') { Stop-ApiValidation 'Invalid -Set; use name=value.' }
+        $values[$matches[1]] = $matches[2]
+        $secretValues.Add($matches[2])
+    }
+    foreach ($key in $values.Keys) {
+        if ($values[$key] -is [hashtable] -or $values[$key] -is [array]) { Stop-ApiValidation 'Placeholder values must be scalars.' }
+    }
+    $methodValue = if ($Method) { $Method } else { Get-Value $request 'method' 'GET' }
+    if ($methodValue -notmatch '^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$') { Stop-ApiValidation 'Unsupported request method.' }
+    $methodValue = $methodValue.ToUpperInvariant()
+    $requestUrl = if ($Url) { $Url } else {
+        $baseUrl = [string](Get-Value $environment 'base_url' '')
+        if (-not $baseUrl) { Stop-ApiValidation 'Environment base_url is required unless -Url is supplied.' }
+        $baseUrl = Expand-ApiValue $baseUrl $values $secretValues
+        $null = Add-ApiQuery $baseUrl @() $values $secretValues
+        if (([Uri]$baseUrl).Query) { Stop-ApiValidation 'base_url cannot include a query; put query entries in the request.' }
+        $baseUrl.TrimEnd('/') + '/' + ([string](Get-Value $request 'path' '/')).TrimStart('/')
+    }
+    $requestUrl = Expand-ApiValue $requestUrl $values $secretValues
+    if ($requestUrl.Length -gt 16384) { Stop-ApiValidation 'URL exceeds 16 KiB.' }
+    $queryItems = @(Get-StringArray $request 'query') + $Query
+    $requestUrl = Add-ApiQuery $requestUrl $queryItems $values $secretValues
+    if ($requestUrl.Length -gt 16384) { Stop-ApiValidation 'URL including query exceeds 16 KiB.' }
+    $headers = @(Merge-ApiHeaders @(Get-StringArray $request 'headers') $Header $values $secretValues)
+
+    $statuses = if ($PSBoundParameters.ContainsKey('ExpectedStatus')) { $ExpectedStatus } else { @(Get-Value $request 'expected_status' @(200..299)) }
+    if (@($statuses).Count -eq 0) { Stop-ApiValidation 'Expected statuses cannot be empty.' }
+    foreach ($status in $statuses) { if ($status -isnot [int] -and $status -isnot [long]) { Stop-ApiValidation 'Expected statuses must be integers.' }; if ($status -lt 100 -or $status -gt 599) { Stop-ApiValidation 'Expected statuses must be between 100 and 599.' } }
+
+    $temporaryDirectory = New-PrivateTempDirectory
+    $bodyFile = $null
+    if ($PSBoundParameters.ContainsKey('Body')) {
+        if ($Body -and (Test-Path -LiteralPath $Body -PathType Leaf)) { $bodyFile = (Resolve-Path -LiteralPath $Body).ProviderPath }
+        else { $bodyFile = Join-Path $temporaryDirectory 'body'; Write-Utf8 $bodyFile $Body }
+    } elseif ($Payload) { $bodyFile = Find-ApiPayload $interfacePath $Payload }
+    if ($bodyFile -and (Get-Item -LiteralPath $bodyFile).Length -gt 104857600) { Stop-ApiValidation 'Payload exceeds the 100 MiB limit.' }
+    if ($bodyFile -and -not $RawPayload) {
+        if ((Get-Item -LiteralPath $bodyFile).Length -gt 10485760) { Stop-ApiValidation 'Templated payload exceeds 10 MiB; use -RawPayload to send it unchanged.' }
+        $raw = Read-Utf8 $bodyFile
+        $expanded = Expand-ApiValue $raw $values $secretValues
+        if ([Text.Encoding]::UTF8.GetByteCount($expanded) -gt 10485760) { Stop-ApiValidation 'Expanded payload exceeds 10 MiB.' }
+        if ($expanded -ne $raw) { $bodyFile = Join-Path $temporaryDirectory 'expanded-body'; Write-Utf8 $bodyFile $expanded }
+    }
+    if ($methodValue -eq 'HEAD' -and $bodyFile) { Stop-ApiValidation 'HEAD cannot include a payload.' }
+
+    $result = Invoke-ApiCurl -RequestUrl $requestUrl -Method $methodValue -Headers $headers -BodyFile $bodyFile `
+        -ExpectedStatus $statuses -TimeoutSeconds $TimeoutSeconds -ConnectTimeoutSeconds $ConnectTimeoutSeconds `
+        -MaxResponseBytes $MaxResponseBytes -TemporaryDirectory $temporaryDirectory -SecretValues $secretValues.ToArray() `
+        -SaveReport:$Save -DebugMode:$DebugMode -RequestName $Command -ServiceName ([string](Get-Value $request 'service' $Command)) `
+        -EnvironmentName $Env -ReportRoot (Join-Path $PSScriptRoot 'runs')
+    foreach ($line in $result.Output) { Write-Output $line }
+    $exitCode = $result.ExitCode
+} catch {
+    # Never print exception text: native/parser/file errors can embed credentials or payloads.
+    $safeMessage = 'Check configuration, paths, curl installation and permissions.'
+    $exception = $_.Exception
+    while ($exception) {
+        if ($exception.Data.Contains('ApiSafeMessage')) { $safeMessage = [string]$exception.Data['ApiSafeMessage']; break }
+        $exception = $exception.InnerException
+    }
+    [Console]::Error.WriteLine("API test failed: $safeMessage Exit code: 2.")
+    $exitCode = 2
 } finally {
-    if ($temporaryPayload) { Remove-Item -LiteralPath $temporaryPayload -Force -ErrorAction SilentlyContinue }
+    if ($temporaryDirectory) { Remove-PrivateTempDirectory $temporaryDirectory }
 }
 exit $exitCode

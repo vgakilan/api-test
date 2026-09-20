@@ -6,10 +6,12 @@
 user_agent = "api-test/1.0"
 
 [environments.test]
-base_url = "https://httpbin.org"
+# Replace with your approved test API. This placeholder deliberately cannot resolve.
+base_url = "https://api.test.example.invalid"
 
 [environments.test.values]
 resource = "users"
+USER_ID = "123"
 
 [environments.local]
 base_url = "http://localhost:8080"
