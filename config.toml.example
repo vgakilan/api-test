@@ -1,4 +1,7 @@
-# Non-secret project settings. Secrets are loaded from .env.
+# Copy this file to config.toml and customize it for your machine.
+# config.toml is intentionally gitignored because environments and service
+# endpoints can differ between systems.
+
 [defaults]
 user_agent = "api-test/1.0"
 

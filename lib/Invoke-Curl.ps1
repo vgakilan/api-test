@@ -8,6 +8,8 @@ param(
 
     [string]$RequestName = "request",
 
+    [string]$ServiceName = "service",
+
     [string]$BodyFile = ""
 )
 
@@ -18,6 +20,46 @@ $startedAt = Get-Date
 $headersFile = [System.IO.Path]::GetTempFileName()
 $responseBodyFile = [System.IO.Path]::GetTempFileName()
 $diagnosticFile = [System.IO.Path]::GetTempFileName()
+
+function Redact-Text([string]$Text) {
+    if ($null -eq $Text) { return "" }
+    $result = $Text
+    $result = $result -replace '(?im)^((?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|.*(?:token|secret|password|api[-_]?key))\s*:\s*).*$','$1[REDACTED]'
+    $result = $result -replace '(?i)("(?:password|passcode|token|access_token|refresh_token|client_secret|secret|api[_-]?key)"\s*:\s*")[^"]*(")','$1[REDACTED]$2'
+    $result = $result -replace '(?i)(<(?:password|passcode|token|access_token|refresh_token|client_secret|secret|api[_-]?key)>)[^<]*(</(?:password|passcode|token|access_token|client_secret|secret|api[_-]?key)>)','$1[REDACTED]$2'
+    return $result
+}
+
+function Redact-Url([string]$Url) {
+    if ($null -eq $Url) { return "" }
+    return $Url -replace '(?i)([?&](?:token|access_token|refresh_token|secret|password|api[_-]?key)=)[^&]*','$1[REDACTED]'
+}
+
+function Format-HeadersMarkdown([string[]]$HeaderLines) {
+    $rows = @(
+        '| Header | Value |'
+        '| --- | --- |'
+    )
+    foreach ($line in @($HeaderLines)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $trimmed = $line.Trim()
+        if ($trimmed -match '^HTTP/\S+\s+\d+') {
+            $name = 'Status'
+            $value = $trimmed
+        } elseif ($trimmed -match '^([^:]+):\s*(.*)$') {
+            $name = $matches[1].Trim()
+            $value = $matches[2].Trim()
+        } else {
+            $name = 'Info'
+            $value = $trimmed
+        }
+        $name = $name -replace '\|', '\|'
+        $value = $value -replace '\|', '\|'
+        $rows += "| $name | $value |"
+    }
+    if ($rows.Count -eq 2) { $rows += '| (none) | |' }
+    return ($rows -join "`n")
+}
 
 try {
     $curlOptions = @(
@@ -100,18 +142,19 @@ try {
     if ($SaveReport) {
         $root = Split-Path -Parent $PSScriptRoot
         $reportDirectory = Join-Path $root ("runs\" + $startedAt.ToString("yyyy-MM-dd"))
-        $reportName = "{0}_{1}_{2}.md" -f $startedAt.ToString("HH-mm-ss"), $env:API_ENVIRONMENT, $RequestName
+        $reportName = "{0}_{1}_{2}_{3}.md" -f $startedAt.ToString("HH-mm-ss-fff"), $env:API_ENVIRONMENT, $ServiceName, $RequestName
         $reportPath = Join-Path $reportDirectory ($reportName -replace '[^a-zA-Z0-9_.-]', '_')
         New-Item -ItemType Directory -Path $reportDirectory -Force | Out-Null
 
-        $safeRequestHeaders = $requestHeaders | ForEach-Object {
-            if ($_ -match '^(Authorization|Cookie|Set-Cookie|.*(token|secret|api[-_]?key))\s*:') { ($_ -replace ':.*$', ': [REDACTED]') } else { $_ }
-        }
-        $safeResponseHeaders = $responseHeaders -replace '(?im)^(set-cookie|authorization):.*$', '$1: [REDACTED]'
+        $safeRequestHeaders = $requestHeaders | ForEach-Object { Redact-Text $_ }
+        $safeResponseHeaders = Redact-Text $responseHeaders
+        $safeRequestUrl = Redact-Url $requestUrl
+        $requestHeadersMarkdown = Format-HeadersMarkdown $safeRequestHeaders
+        $responseHeadersMarkdown = Format-HeadersMarkdown ($safeResponseHeaders -split "`r?`n")
         $requestLanguage = if ($BodyFile -match '\.xml$') { "xml" } elseif ($BodyFile -match '\.json$') { "json" } else { "text" }
         $responseLanguage = if ($responseBody.TrimStart().StartsWith("<")) { "xml" } elseif ($responseBody.TrimStart().StartsWith("{")) { "json" } else { "text" }
-        $requestBodyText = if ($requestBody) { $requestBody.TrimEnd() } else { "(none)" }
-        $responseBodyText = if ($displayBody) { $displayBody } else { "(empty)" }
+        $requestBodyText = if ($requestBody) { (Redact-Text $requestBody).TrimEnd() } else { "(none)" }
+        $responseBodyText = if ($displayBody) { (Redact-Text $displayBody).TrimEnd() } else { "(empty)" }
         $errorText = if ($DebugMode -and $curlError.Trim()) { "See Curl debug output below." } elseif ($curlError.Trim()) { $curlError.TrimEnd() } else { "None" }
         $safeDebugText = $errorText -replace '(?im)^([>\<]\s*)(Authorization|Cookie|Set-Cookie):.*$', '$1$2: [REDACTED]'
         $report = @"
@@ -121,9 +164,10 @@ try {
 
 - Started: $($startedAt.ToString("o"))
 - Finished: $($finishedAt.ToString("o"))
+- Service: $ServiceName
+- Interface: $RequestName
 - Environment: $env:API_ENVIRONMENT
-- Request: $RequestName
-- Body file: $BodyFile
+- Request payload: $(if ($BodyFile) { $BodyFile } else { "(none)" })
 - Curl exit code: $curlExitCode
 - HTTP status: $($metricValues[0])
 - Duration: $($metricValues[1]) seconds
@@ -133,36 +177,36 @@ try {
 
 ### Method and URL
 
-$requestMethod $requestUrl
+$requestMethod $safeRequestUrl
 
 ### Headers
 
-$(($safeRequestHeaders -join "`n"))
+$requestHeadersMarkdown
 
 ### Body
 
-````$requestLanguage
+~~~$requestLanguage
 $requestBodyText
-````
+~~~
 
 ## Response
 
 ### Headers
 
-$safeResponseHeaders
+$responseHeadersMarkdown
 
 ### Body
 
-````$responseLanguage
+~~~$responseLanguage
 $responseBodyText
-````
+~~~
 
 ## Errors
 
-````text
+~~~text
 $errorText
-````
-$(if ($DebugMode) { "`n## Curl debug output`n`n````text`n$safeDebugText`n````" })
+~~~
+$(if ($DebugMode) { "`n## Curl debug output`n`n~~~text`n$safeDebugText`n~~~" })
 "@
         Set-Content -LiteralPath $reportPath -Value $report -Encoding utf8
         Write-Output ""

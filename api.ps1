@@ -129,10 +129,13 @@ headers = []
 
 if (-not (Test-Path -LiteralPath $Config -PathType Leaf)) { throw "Config not found: $Config" }
 $settings = Parse-Toml $Config
+$env:API_ENVIRONMENT = $Env
+$env:API_REQUEST = $Command
 $interfacePath = Join-Path $PSScriptRoot (Join-Path 'interface' $Command)
 $requestPath = Join-Path $interfacePath 'request.toml'
 if (-not (Test-Path -LiteralPath $requestPath -PathType Leaf)) { throw "Interface not found: $Command. Create it with '.\api.ps1 create $Command'." }
 $request = Parse-Toml $requestPath
+$serviceName = [string](Get-Value $request 'service' $Command)
 $environment = Get-Value (Get-Value $settings 'environments' @{}) $Env @{}
 $defaults = Get-Value $settings 'defaults' @{}
 $values = @{}
@@ -169,7 +172,7 @@ $arguments = @('--request', $methodValue, '--url', $requestUrl)
 foreach ($headerValue in $headers) { $arguments += @('--header', $headerValue) }
 if ($payloadPath) { $arguments += @('--data-binary', "@$payloadPath") }
 try {
-    & (Join-Path $PSScriptRoot 'lib\Invoke-Curl.ps1') -CurlArguments $arguments -SaveReport:$Save -DebugMode:$DebugMode -RequestName $Command -BodyFile $payloadPath
+    & (Join-Path $PSScriptRoot 'lib\Invoke-Curl.ps1') -CurlArguments $arguments -SaveReport:$Save -DebugMode:$DebugMode -RequestName $Command -ServiceName $serviceName -BodyFile $payloadPath
     $exitCode = $LASTEXITCODE
 } finally {
     if ($temporaryPayload) { Remove-Item -LiteralPath $temporaryPayload -Force -ErrorAction SilentlyContinue }

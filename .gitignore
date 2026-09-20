@@ -3,6 +3,7 @@
 !.env.example
 runs/
 *.local.toml
+config.toml
 
 # Local Codex customization. Keep agent instructions, subagents, skills,
 # hooks, and development standards machine-specific.

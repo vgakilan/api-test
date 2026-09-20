@@ -1,3 +1,4 @@
+service = "httpbin"
 method = "GET"
 path = "/get"
 query = ["resource={{resource}}"]
