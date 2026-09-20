@@ -3,6 +3,7 @@
 ## Unreleased - reliability and office-use hardening
 
 - Interfaces may be grouped one level deep, for example `meps/sendEstateClaim`; grouped paths are contained under `interface/` and report filenames are sanitized.
+- Interfaces may define an optional `base_url` in `request.toml`, overriding the selected environment host while retaining `-Url` as the highest-priority override.
 
 - Replaced permissive TOML splitting with a strict, documented subset parser; quoted commas/hashes and multiline arrays work, while duplicates and unsupported syntax fail.
 - Added offline regression tests using real curl against an isolated loopback fixture, and a Windows PowerShell 5.1/PowerShell 7 CI matrix.

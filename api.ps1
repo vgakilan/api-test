@@ -75,11 +75,12 @@ try {
 
     $interfacePath = Resolve-InterfacePath $PSScriptRoot $Command
     $request = Read-ApiToml (Join-Path $interfacePath 'request.toml')
-    Assert-Keys $request @('service','method','path','headers','query','expected_status') 'request'
+    Assert-Keys $request @('service','base_url','method','path','headers','query','expected_status') 'request'
     if ($request.ContainsKey('expected_status') -and $request.expected_status -isnot [array]) { Stop-ApiValidation 'expected_status must be an array of integers.' }
     foreach ($key in @('service','method','path')) {
         if ($request.ContainsKey($key) -and $request[$key] -isnot [string]) { Stop-ApiValidation 'Request service, method and path must be strings.' }
     }
+    if ($request.ContainsKey('base_url') -and $request.base_url -isnot [string]) { Stop-ApiValidation 'Request base_url must be a string.' }
     $values = @{}
     foreach ($key in $defaults.Keys) { $values[$key] = $defaults[$key] }
     foreach ($key in $environmentValues.Keys) { $values[$key] = $environmentValues[$key] }
@@ -106,7 +107,7 @@ try {
     if ($methodValue -notmatch '^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$') { Stop-ApiValidation 'Unsupported request method.' }
     $methodValue = $methodValue.ToUpperInvariant()
     $requestUrl = if ($Url) { $Url } else {
-        $baseUrl = [string](Get-Value $environment 'base_url' '')
+        $baseUrl = if ($request.ContainsKey('base_url')) { [string]$request.base_url } else { [string](Get-Value $environment 'base_url' '') }
         if (-not $baseUrl) { Stop-ApiValidation 'Environment base_url is required unless -Url is supplied.' }
         $baseUrl = Expand-ApiValue $baseUrl $values $secretValues
         $null = Add-ApiQuery $baseUrl @() $values $secretValues

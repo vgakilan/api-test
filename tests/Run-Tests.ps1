@@ -125,6 +125,25 @@ number = 42
     Write-Utf8 (Join-Path $flatInterface 'request.toml') "method = `"GET`"`npath = `"/flat`"`nheaders = []`n"
     $flatOutput = @(& $cli get-user -NoDotEnv)
     Assert-True ($LASTEXITCODE -eq 0 -and ($flatOutput -join "`n") -match 'HTTP status: 200') 'Existing flat interface runs unchanged'
+    $overrideInterface = Join-Path $sandbox 'interface\meps\override-host'
+    $null = New-Item -ItemType Directory -Path (Join-Path $overrideInterface 'payloads') -Force
+    Write-Utf8 (Join-Path $overrideInterface 'request.toml') "base_url = `"$baseUrl/override-host`"`nmethod = `"GET`"`npath = `"/target`"`nheaders = []`n"
+    $null = & $cli 'meps/override-host' -NoDotEnv
+    $requests = $server.Requests.ToArray()
+    Assert-True ($LASTEXITCODE -eq 0 -and $requests[$requests.Length - 1].StartsWith('GET /override-host/target ')) 'Interface base_url overrides environment base_url'
+    Write-Utf8 (Join-Path $overrideInterface 'request.toml') "base_url = `"file:///unsafe`"`nmethod = `"GET`"`npath = `"/target`"`nheaders = []`n"
+    $beforeRequests = $server.Requests.Count
+    $null = & $cli 'meps/override-host' -NoDotEnv
+    Assert-True ($LASTEXITCODE -eq 2 -and $server.Requests.Count -eq $beforeRequests) 'Interface base_url requires HTTP(S)'
+    Write-Utf8 (Join-Path $overrideInterface 'request.toml') "base_url = `"$baseUrl/?unsafe=true`"`nmethod = `"GET`"`npath = `"/target`"`nheaders = []`n"
+    $null = & $cli 'meps/override-host' -NoDotEnv
+    Assert-True ($LASTEXITCODE -eq 2 -and $server.Requests.Count -eq $beforeRequests) 'Interface base_url cannot contain a query'
+    Write-Utf8 (Join-Path $overrideInterface 'request.toml') "base_url = `"$baseUrl/#unsafe`"`nmethod = `"GET`"`npath = `"/target`"`nheaders = []`n"
+    $null = & $cli 'meps/override-host' -NoDotEnv
+    Assert-True ($LASTEXITCODE -eq 2 -and $server.Requests.Count -eq $beforeRequests) 'Interface base_url cannot contain a fragment'
+    Write-Utf8 (Join-Path $overrideInterface 'request.toml') "base_url = 42`nmethod = `"GET`"`npath = `"/target`"`nheaders = []`n"
+    $null = & $cli 'meps/override-host' -NoDotEnv
+    Assert-True ($LASTEXITCODE -eq 2 -and $server.Requests.Count -eq $beforeRequests) 'Interface base_url must be a string'
     $null = & $cli create 'meps/updateEstateClaim'
     Assert-True ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $sandbox 'interface\meps\updateEstateClaim\request.toml'))) 'Nested interface scaffolding works'
     $out = @(& $cli test -NoDotEnv)

@@ -99,6 +99,8 @@ Request example:
 
 ```toml
 service = "customer-api"
+# Optional: overrides [environments.<name].base_url for this interface.
+# base_url = "https://meps.stst.example.invalid"
 method = "POST"
 path = "/users/"
 expected_status = [200, 201]
@@ -113,9 +115,23 @@ headers = [
 
 The parser intentionally supports a small TOML subset: bare keys, dotted table names, single-line single/double-quoted strings, signed decimal integers, booleans, and arrays of scalars. Arrays may span lines and have a trailing comma. Double-quoted strings support JSON-compatible escapes (`\"`, `\\`, `\n`, `\r`, `\t`, `\b`, `\f`, `\uXXXX`); single-quoted strings are literal. Quoted commas and `#` are preserved. Duplicate keys/tables, bare string values, inline tables, array tables, floats, dates, multiline strings and unsupported syntax are rejected. TOML key lookup is case-insensitive in this project. Files are limited to 1 MiB.
 
-Allowed root configuration tables are `defaults` and `environments`. Each selected environment accepts `base_url` and a `values` table. Defaults and environment values are scalar placeholder values, not curl options. Request keys are `service`, `method`, `path`, `headers`, `query` and `expected_status`. Unknown request/environment keys fail. `headers` and `query` must be arrays of strings; `expected_status` must be an array of integers from 100 to 599. Methods are GET, POST, PUT, PATCH, DELETE, HEAD and OPTIONS.
+Allowed root configuration tables are `defaults` and `environments`. Each selected environment accepts `base_url` and a `values` table. Defaults and environment values are scalar placeholder values, not curl options. Request keys are `service`, optional `base_url`, `method`, `path`, `headers`, `query` and `expected_status`. An interface `base_url`, when present, must be a string and overrides the selected environment's `base_url`; otherwise the environment value is used. Unknown request/environment keys fail. `headers` and `query` must be arrays of strings; `expected_status` must be an array of integers from 100 to 599. Methods are GET, POST, PUT, PATCH, DELETE, HEAD and OPTIONS.
 
-Use an absolute HTTP(S) base URL without a query or fragment. The request path is appended to it, preserving a trailing slash. `-Url` replaces the combined URL. URL user information, fragments, whitespace and control characters are rejected. Completed URLs are limited to 16 KiB.
+Use an absolute HTTP(S) base URL without a query or fragment. The request path is appended to it, preserving a trailing slash. URL precedence is `-Url` > interface `base_url` > environment `base_url`. URL user information, fragments, whitespace and control characters are rejected. Completed URLs are limited to 16 KiB.
+
+For example, both interfaces can use the same `stst` environment while targeting different hosts:
+
+```toml
+# interface/meps/sendEstateClaim/request.toml
+base_url = "https://meps.stst.example.invalid"
+method = "POST"
+path = "/estate/claims"
+
+# interface/kis/getClaimStatus/request.toml
+base_url = "https://kis.stst.example.invalid"
+method = "GET"
+path = "/claims/status"
+```
 
 ## Placeholder and credential resolution
 
