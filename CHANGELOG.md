@@ -2,6 +2,8 @@
 
 ## Unreleased - reliability and office-use hardening
 
+- Console/native output now uses BOM-free UTF-8, preserving non-ASCII response headers and bodies across Windows PowerShell 5.1 and PowerShell 7.
+
 - Interfaces may be grouped one level deep, for example `meps/sendEstateClaim`; grouped paths are contained under `interface/` and report filenames are sanitized.
 - Interfaces may define an optional `base_url` in `request.toml`, overriding the selected environment host while retaining `-Url` as the highest-priority override.
 

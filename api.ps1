@@ -23,6 +23,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# Keep console/native output consistent across Windows PowerShell and PowerShell 7.
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 if ($Help -or [string]::IsNullOrWhiteSpace($Command)) {
     @'
 PowerShell API test CLI

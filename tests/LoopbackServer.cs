@@ -74,12 +74,14 @@ public sealed class ApiTestLoopbackServer : IDisposable
                 if (path == "/echo") response = body;
                 if (path == "/large") response = new byte[300000];
                 if (path == "/binary") response = new byte[] { 0, 255, 1 };
+                if (path == "/unicode") response = Encoding.UTF8.GetBytes("<response><name>\u00c4\u00c5\u00e9</name></response>");
                 bool chunked = path == "/chunked";
                 if (chunked) response = new byte[4096];
                 string responseHeaders = "HTTP/1.1 " + status + " Test\r\nConnection: close\r\nContent-Type: application/json\r\nSet-Cookie: session=COOKIE-SECRET\r\n";
                 if (status == 302) responseHeaders += "Location: /echo\r\n";
+                if (path == "/unicode") responseHeaders = responseHeaders.Replace("application/json", "text/xml; charset=utf-8") + "X-Display-Name: \u00c4\u00c5\u00e9\r\n";
                 responseHeaders += chunked ? "Transfer-Encoding: chunked\r\n\r\n" : "Content-Length: " + response.Length + "\r\n\r\n";
-                byte[] prefix = Encoding.ASCII.GetBytes(responseHeaders);
+                byte[] prefix = Encoding.UTF8.GetBytes(responseHeaders);
                 stream.Write(prefix, 0, prefix.Length);
                 if (!headers.StartsWith("HEAD ", StringComparison.Ordinal))
                 {

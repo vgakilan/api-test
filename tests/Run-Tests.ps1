@@ -149,6 +149,40 @@ number = 42
     $out = @(& $cli test -NoDotEnv)
     Assert-True ($LASTEXITCODE -eq 0) 'Real curl GET succeeds'
     Assert-True (($out -join "`n") -notmatch 'RESPONSE-SECRET|RESPONSE-REFRESH|COOKIE-SECRET') 'Terminal redacts response secrets'
+    $unicodeText = [string][char]0x00c4 + [char]0x00c5 + [char]0x00e9
+    [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(437)
+    $unicodeOutput = @(& $cli test -NoDotEnv -Url "$baseUrl/unicode") -join "`n"
+    Assert-True ($LASTEXITCODE -eq 0 -and $unicodeOutput.Contains("<name>$unicodeText</name>") -and $unicodeOutput.Contains("X-Display-Name: $unicodeText")) 'Unicode response body and headers survive captured output'
+    Assert-True ([Console]::OutputEncoding.CodePage -eq 65001 -and [Console]::OutputEncoding.GetPreamble().Length -eq 0) 'CLI replaces OEM console encoding with BOM-free UTF-8'
+    $redirectedPath = Join-Path $temp 'unicode-output.txt'
+    & $cli test -NoDotEnv -Url "$baseUrl/unicode" | Out-File -LiteralPath $redirectedPath
+    $redirectedText = [IO.File]::ReadAllText($redirectedPath)
+    Assert-True ($LASTEXITCODE -eq 0 -and $redirectedText.Contains("<name>$unicodeText</name>") -and $redirectedText.Contains("X-Display-Name: $unicodeText")) 'Out-File default encoding preserves Unicode response'
+
+    # Capture actual child-process stdout bytes, as a CI log collector would.
+    $childCommand = "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(437); `$OutputEncoding = [Text.Encoding]::ASCII; & '" + $cli.Replace("'", "''") + "' test -NoDotEnv -Url '$baseUrl/unicode'; exit `$LASTEXITCODE"
+    $childInfo = New-Object Diagnostics.ProcessStartInfo
+    $childInfo.FileName = (Get-Process -Id $PID).Path
+    $childInfo.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
+    $childInfo.UseShellExecute = $false
+    $childInfo.CreateNoWindow = $true
+    $childInfo.RedirectStandardOutput = $true
+    $childInfo.RedirectStandardError = $true
+    $child = New-Object Diagnostics.Process
+    $child.StartInfo = $childInfo
+    $capturedBytes = New-Object IO.MemoryStream
+    try {
+        $null = $child.Start()
+        $copyTask = $child.StandardOutput.BaseStream.CopyToAsync($capturedBytes)
+        $errorTask = $child.StandardError.ReadToEndAsync()
+        if (-not $child.WaitForExit(15000)) { $child.Kill(); $child.WaitForExit(); throw 'Unicode child process timed out.' }
+        $null = $copyTask.GetAwaiter().GetResult()
+        $null = $errorTask.GetAwaiter().GetResult()
+        $bytes = $capturedBytes.ToArray()
+        $decoded = (New-Object Text.UTF8Encoding($false, $true)).GetString($bytes)
+        Assert-True ($child.ExitCode -eq 0 -and $decoded.Contains("<name>$unicodeText</name>") -and $decoded.Contains("X-Display-Name: $unicodeText")) 'CI-style redirected stdout contains valid UTF-8 Unicode'
+        Assert-True ($bytes.Length -gt 3 -and -not ($bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191)) 'Redirected stdout has no UTF-8 BOM'
+    } finally { $child.Dispose(); $capturedBytes.Dispose() }
     $null = & $cli test -NoDotEnv -Url "$baseUrl/fail"
     Assert-True ($LASTEXITCODE -eq 22) 'HTTP 500 fails'
     $null = & $cli test -NoDotEnv -Url "$baseUrl/missing" -ExpectedStatus 404
