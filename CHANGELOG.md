@@ -13,7 +13,7 @@
 
 - HTTP responses outside 200-299 now return exit 22 unless explicitly included in `expected_status` or `-ExpectedStatus`. Curl transport exit codes remain unchanged.
 - Curl 8.4.0+ is required for response-size enforcement, including chunked responses. Defaults are a 10-second connection timeout, 60-second total timeout and 10 MiB response limit.
-- Precedence is now defaults, environment values, `.env`, process environment, then `-Set` (last wins). Existing process credentials are no longer overwritten by `.env`.
+- Precedence is now defaults, environment values, process environment, `.env`, then `-Set` (last wins). Explicit project `.env` values override incidental ambient process variables.
 - Unknown environments, unresolved placeholders and unsupported TOML now fail early. Use quoted strings, scalar arrays and documented tables; the project does not implement all TOML features.
 - Query entries are unencoded `name=value` pairs and are URL-encoded by the CLI. Remove pre-encoding from those entries; existing query text supplied directly in `-Url` is preserved.
 - `-Header` replaces a configured header with the same name. Pass array options once, using PowerShell comma-separated arrays; repeating a named PowerShell parameter is not supported.

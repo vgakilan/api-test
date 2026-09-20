@@ -103,8 +103,8 @@ Use an absolute HTTP(S) base URL without a query or fragment. The request path i
 
 1. `[defaults]`
 2. `[environments.<name>.values]` (and the environment's `base_url` value)
-3. Root `.env`
-4. Process environment variables
+3. Process environment variables
+4. Root `.env`
 5. `-Set name=value`
 
 Missing or nested placeholders fail before a request is sent. Values are case-insensitive. Empty defined values are allowed. `.env` supports blank lines, full-line `#` comments, optional `export`, and `NAME=value` with optional enclosing quotes. Values are literal; there is no shell expansion, escape processing or inline-comment removal. Duplicate/malformed entries fail. `.env` never changes the process environment; `-NoDotEnv` skips it entirely.

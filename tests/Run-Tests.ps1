@@ -184,7 +184,7 @@ number = 42
         $env:API_TEST_FIXTURE_VALUE = 'process-value'
         $null = & $cli test
         $requests = $server.Requests.ToArray()
-        Assert-True ($requests[$requests.Length - 1].Contains('X-Value: process-value')) 'Process environment overrides dotenv'
+        Assert-True ($requests[$requests.Length - 1].Contains('X-Value: dotenv-value')) 'Dotenv overrides ambient process environment'
         $null = & $cli test -Set 'API_TEST_FIXTURE_VALUE=override-value' -Header 'X-Value: header-value'
         $requests = $server.Requests.ToArray()
         Assert-True ($requests[$requests.Length - 1].Contains('X-Value: header-value')) 'CLI header replaces configured header'

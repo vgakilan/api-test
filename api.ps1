@@ -85,13 +85,14 @@ try {
     foreach ($key in $environmentValues.Keys) { $values[$key] = $environmentValues[$key] }
     $values['base_url'] = Get-Value $environment 'base_url' ''
     $secretValues = New-Object 'System.Collections.Generic.List[string]'
-    if (-not $NoDotEnv) {
-        $dotenv = Read-ApiDotEnv (Join-Path $PSScriptRoot '.env')
-        foreach ($key in $dotenv.Keys) { $values[$key] = $dotenv[$key]; $secretValues.Add([string]$dotenv[$key]) }
-    }
+    # Ambient process state is the fallback; explicit project .env values must win.
     foreach ($entry in [Environment]::GetEnvironmentVariables().GetEnumerator()) {
         $values[[string]$entry.Key] = [string]$entry.Value
         if ([string]$entry.Key -match '(?i)token|secret|password|passcode|api.?key|credential|authorization|cookie') { $secretValues.Add([string]$entry.Value) }
+    }
+    if (-not $NoDotEnv) {
+        $dotenv = Read-ApiDotEnv (Join-Path $PSScriptRoot '.env')
+        foreach ($key in $dotenv.Keys) { $values[$key] = $dotenv[$key]; $secretValues.Add([string]$dotenv[$key]) }
     }
     foreach ($item in $Set) {
         if ($item -notmatch '^([A-Za-z_][A-Za-z0-9_.-]*)=(.*)$') { Stop-ApiValidation 'Invalid -Set; use name=value.' }
