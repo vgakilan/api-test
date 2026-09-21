@@ -58,7 +58,7 @@ Create an interface without needing configuration or credentials:
 
 ```powershell
 .\api.ps1 create invoice-search
-.\api.ps1 create meps/updateEstateClaim
+.\api.ps1 create claims/updateClaim
 ```
 
 Names must start with a letter or digit and contain only letters, digits, `_` or `-`, up to 80 characters per segment. One `/` may separate a group and interface name. Absolute paths, backslashes, empty segments, `.`, `..`, Windows device names, and deeper paths are rejected. Existing interfaces are never overwritten. Edit the generated TOML and add payload files; do not add a separate endpoint script.
@@ -67,11 +67,11 @@ For example:
 
 ```text
 interface/
-└── meps/
-    ├── sendEstateClaim/
+└── claims/
+    ├── submitClaim/
     │   ├── request.toml
     │   └── payloads/
-    ├── updateEstateClaim/
+    ├── updateClaim/
     │   ├── request.toml
     │   └── payloads/
     └── getClaimStatus/
@@ -79,7 +79,7 @@ interface/
         └── payloads/
 ```
 
-Run a grouped interface with `.\api.ps1 meps/sendEstateClaim -Env test -Payload valid.xml`. Saved reports replace `/` with `-` in the report filename while retaining the grouped name in request metadata.
+Run a grouped interface with `.\api.ps1 claims/submitClaim -Env test -Payload valid.xml`. Saved reports replace `/` with `-` in the report filename while retaining the grouped name in request metadata.
 
 ## Configuration and supported TOML
 
@@ -100,7 +100,7 @@ Request example:
 ```toml
 service = "customer-api"
 # Optional: overrides [environments.<name].base_url for this interface.
-# base_url = "https://meps.stst.example.invalid"
+# base_url = "https://claims.stst.example.invalid"
 method = "POST"
 path = "/users/"
 expected_status = [200, 201]
@@ -122,13 +122,13 @@ Use an absolute HTTP(S) base URL without a query or fragment. The request path i
 For example, both interfaces can use the same `stst` environment while targeting different hosts:
 
 ```toml
-# interface/meps/sendEstateClaim/request.toml
-base_url = "https://meps.stst.example.invalid"
+# interface/claims/submitClaim/request.toml
+base_url = "https://claims.stst.example.invalid"
 method = "POST"
 path = "/estate/claims"
 
-# interface/kis/getClaimStatus/request.toml
-base_url = "https://kis.stst.example.invalid"
+# interface/registry/getClaimStatus/request.toml
+base_url = "https://registry.stst.example.invalid"
 method = "GET"
 path = "/claims/status"
 ```

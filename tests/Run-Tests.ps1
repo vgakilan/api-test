@@ -67,11 +67,11 @@ number = 42
     }
     Assert-Throws { Assert-InterfaceName 'CON' } 'Reserved Windows name rejected'
     $interfaceRoot = Join-Path $temp 'interface'
-    $nestedResolved = Resolve-InterfacePath $temp 'meps/sendEstateClaim'
-    Assert-True ($nestedResolved -eq [IO.Path]::GetFullPath((Join-Path $interfaceRoot 'meps\sendEstateClaim'))) 'Nested interface resolves inside interface root'
+    $nestedResolved = Resolve-InterfacePath $temp 'claims/submitClaim'
+    Assert-True ($nestedResolved -eq [IO.Path]::GetFullPath((Join-Path $interfaceRoot 'claims\submitClaim'))) 'Nested interface resolves inside interface root'
     $flatResolved = Resolve-InterfacePath $temp 'get-user'
     Assert-True ($flatResolved -eq [IO.Path]::GetFullPath((Join-Path $interfaceRoot 'get-user'))) 'Existing flat interface resolves unchanged'
-    Assert-True ((Get-InterfaceReportName 'meps/sendEstateClaim') -eq 'meps-sendEstateClaim') 'Nested report name is sanitized'
+    Assert-True ((Get-InterfaceReportName 'claims/submitClaim') -eq 'claims-submitClaim') 'Nested report name is sanitized'
     Assert-True ((Protect-ApiText 'aaa bbb' @('aaa','bbb')) -eq '[REDACTED] [REDACTED]') 'Equal-length secrets both masked'
     foreach ($sample in @('Authorization: Bearer SYNTHETIC-SECRET','> X-Api-Key: SYNTHETIC-SECRET','{"Authorization":"SYNTHETIC-SECRET"}','<refresh_token>SYNTHETIC-SECRET</refresh_token>','password=SYNTHETIC-SECRET&ok=1')) {
         Assert-True ((Protect-ApiText $sample) -notmatch 'SYNTHETIC-SECRET') 'Sensitive field redaction'
@@ -115,37 +115,37 @@ number = 42
     Write-Utf8 (Join-Path $sandbox 'interface\test\request.toml') "method = `"GET`"`npath = `"/`"`nheaders = []`n"
     $cli = Join-Path $sandbox 'api.ps1'
     $requestFile = Join-Path $sandbox 'interface\test\request.toml'
-    $nestedInterface = Join-Path $sandbox 'interface\meps\sendEstateClaim'
+    $nestedInterface = Join-Path $sandbox 'interface\claims\submitClaim'
     $null = New-Item -ItemType Directory -Path (Join-Path $nestedInterface 'payloads') -Force
     Write-Utf8 (Join-Path $nestedInterface 'request.toml') "method = `"GET`"`npath = `"/nested`"`nheaders = []`n"
-    $nestedOutput = @(& $cli 'meps/sendEstateClaim' -NoDotEnv)
+    $nestedOutput = @(& $cli 'claims/submitClaim' -NoDotEnv)
     Assert-True ($LASTEXITCODE -eq 0 -and ($nestedOutput -join "`n") -match 'HTTP status: 200') 'Nested interface request resolves and runs'
     $flatInterface = Join-Path $sandbox 'interface\get-user'
     $null = New-Item -ItemType Directory -Path (Join-Path $flatInterface 'payloads') -Force
     Write-Utf8 (Join-Path $flatInterface 'request.toml') "method = `"GET`"`npath = `"/flat`"`nheaders = []`n"
     $flatOutput = @(& $cli get-user -NoDotEnv)
     Assert-True ($LASTEXITCODE -eq 0 -and ($flatOutput -join "`n") -match 'HTTP status: 200') 'Existing flat interface runs unchanged'
-    $overrideInterface = Join-Path $sandbox 'interface\meps\override-host'
+    $overrideInterface = Join-Path $sandbox 'interface\claims\override-host'
     $null = New-Item -ItemType Directory -Path (Join-Path $overrideInterface 'payloads') -Force
     Write-Utf8 (Join-Path $overrideInterface 'request.toml') "base_url = `"$baseUrl/override-host`"`nmethod = `"GET`"`npath = `"/target`"`nheaders = []`n"
-    $null = & $cli 'meps/override-host' -NoDotEnv
+    $null = & $cli 'claims/override-host' -NoDotEnv
     $requests = $server.Requests.ToArray()
     Assert-True ($LASTEXITCODE -eq 0 -and $requests[$requests.Length - 1].StartsWith('GET /override-host/target ')) 'Interface base_url overrides environment base_url'
     Write-Utf8 (Join-Path $overrideInterface 'request.toml') "base_url = `"file:///unsafe`"`nmethod = `"GET`"`npath = `"/target`"`nheaders = []`n"
     $beforeRequests = $server.Requests.Count
-    $null = & $cli 'meps/override-host' -NoDotEnv
+    $null = & $cli 'claims/override-host' -NoDotEnv
     Assert-True ($LASTEXITCODE -eq 2 -and $server.Requests.Count -eq $beforeRequests) 'Interface base_url requires HTTP(S)'
     Write-Utf8 (Join-Path $overrideInterface 'request.toml') "base_url = `"$baseUrl/?unsafe=true`"`nmethod = `"GET`"`npath = `"/target`"`nheaders = []`n"
-    $null = & $cli 'meps/override-host' -NoDotEnv
+    $null = & $cli 'claims/override-host' -NoDotEnv
     Assert-True ($LASTEXITCODE -eq 2 -and $server.Requests.Count -eq $beforeRequests) 'Interface base_url cannot contain a query'
     Write-Utf8 (Join-Path $overrideInterface 'request.toml') "base_url = `"$baseUrl/#unsafe`"`nmethod = `"GET`"`npath = `"/target`"`nheaders = []`n"
-    $null = & $cli 'meps/override-host' -NoDotEnv
+    $null = & $cli 'claims/override-host' -NoDotEnv
     Assert-True ($LASTEXITCODE -eq 2 -and $server.Requests.Count -eq $beforeRequests) 'Interface base_url cannot contain a fragment'
     Write-Utf8 (Join-Path $overrideInterface 'request.toml') "base_url = 42`nmethod = `"GET`"`npath = `"/target`"`nheaders = []`n"
-    $null = & $cli 'meps/override-host' -NoDotEnv
+    $null = & $cli 'claims/override-host' -NoDotEnv
     Assert-True ($LASTEXITCODE -eq 2 -and $server.Requests.Count -eq $beforeRequests) 'Interface base_url must be a string'
-    $null = & $cli create 'meps/updateEstateClaim'
-    Assert-True ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $sandbox 'interface\meps\updateEstateClaim\request.toml'))) 'Nested interface scaffolding works'
+    $null = & $cli create 'claims/updateClaim'
+    Assert-True ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $sandbox 'interface\claims\updateClaim\request.toml'))) 'Nested interface scaffolding works'
     $out = @(& $cli test -NoDotEnv)
     Assert-True ($LASTEXITCODE -eq 0) 'Real curl GET succeeds'
     Assert-True (($out -join "`n") -notmatch 'RESPONSE-SECRET|RESPONSE-REFRESH|COOKIE-SECRET') 'Terminal redacts response secrets'
